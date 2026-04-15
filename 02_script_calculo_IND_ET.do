@@ -39,11 +39,24 @@ import excel using "$input\\`archivo'", ///
 rename *, upper
 
 *---------------------------- 3. LIMPIEZA -------------------------------------*
-* Fechas: FEC_PROGRAM, FEC_ACTUALIZADA y FEC_REG_ET vienen como texto dd/mm/yyyy
+* Fechas: FEC_PROGRAM, FEC_ACTUALIZADA y FEC_REG_ET pueden venir como:
+*   (a) texto "dd/mm/yyyy"        -> se parsea con date(v,"DMY")
+*   (b) texto "yyyy-mm-dd hh:mm"  -> se parsea con date(v,"YMD##")
+*   (c) serial Excel              -> real(v) + td(30dec1899)
 foreach v in FEC_PROGRAM FEC_ACTUALIZADA FEC_REG_ET {
     capture confirm variable `v'
     if !_rc {
-        gen double `v'_D = date(`v', "DMY")
+        replace `v' = strtrim(`v')
+        replace `v' = "" if `v' == " " | `v' == "."
+        gen double `v'_D = .
+        * (a) dd/mm/yyyy
+        replace `v'_D = date(`v', "DMY") if strpos(`v',"/") > 0
+        * (b) yyyy-mm-dd  (con o sin hora)
+        replace `v'_D = date(`v', "YMD##") ///
+            if missing(`v'_D) & strpos(`v',"-") > 0
+        * (c) serial Excel (número puro)
+        replace `v'_D = real(`v') + td(30dec1899) ///
+            if missing(`v'_D) & real(`v') < . & real(`v') > 10000
         format %td `v'_D
         drop `v'
         rename `v'_D `v'
@@ -106,6 +119,10 @@ restore
 use `fin', clear
 merge 1:1 COD_UNICO using `ini', nogen
 
+* Re-aplicar formato %td (collapse lo pierde)
+format %td MIN_PROG_FIN MAX_ACT_FIN MAX_REG_FIN ///
+           MIN_PROG_INI MAX_ACT_INI MAX_REG_INI
+
 *---------------------------- 6. INDICADORES ----------------------------------*
 gen double INI_ET = MIN_PROG_INI
 gen double FIN_ET = MIN_PROG_FIN
@@ -136,19 +153,31 @@ di as res "   IND_ET       = " %12.4f `IND_ET'
 di as txt "============================================================="
 
 *---------------------------- 7. EXPORTAR -------------------------------------*
-* Guardar pivot
-export excel using "$output\BDA_IND_ET_13ABR2026.xlsx", ///
-    firstrow(variables) sheet("BDA") sheetreplace
+local xlsx "$output\BDA_IND_ET_13ABR2026.xlsx"
 
-* Agregar fila con el indicador
-putexcel set  "$output\BDA_IND_ET_13ABR2026.xlsx", sheet("BDA") modify
-local r = _N + 3
-putexcel K`r' = "Sumatoria"
-putexcel L`r' = `sum_plazo'
-putexcel M`r' = `sum_cant'
+* datestring() convierte los %td en texto dd/mm/yyyy para Excel;
+* keepcellfmt mantiene el formato aplicado con putexcel.
+export excel using "`xlsx'", ///
+    firstrow(variables) sheet("BDA") sheetreplace ///
+    datestring("DD/NN/CCYY") keepcellfmt
+
+* ----- Formatear columnas de fecha en Excel -----
+* Columnas: C=MIN_PROG_FIN, D=MAX_ACT_FIN, E=MAX_REG_FIN, F=FIN_ET,
+*           H=MIN_PROG_INI, I=MAX_ACT_INI, J=MAX_REG_INI, K=INI_ET
+putexcel set "`xlsx'", sheet("BDA") modify
+local nfil = _N + 1        // +1 por la fila de encabezado
+foreach col in C D E F H I J K {
+    putexcel `col'2:`col'`nfil', nformat("dd/mm/yyyy")
+}
+
+* ----- Fila de sumatoria + indicador -----
+local r  = _N + 3
 local r2 = `r' + 1
-putexcel K`r2' = "IND_ET_IITRIM_2026"
-putexcel L`r2' = `IND_ET'
+putexcel K`r'  = "Sumatoria"
+putexcel L`r'  = (`sum_plazo'), nformat("#,##0.00")
+putexcel M`r'  = (`sum_cant'),  nformat("#,##0")
+putexcel K`r2' = "IND_ET_IITRIM_2026", bold
+putexcel L`r2' = (`IND_ET'),    nformat("0.0000"), bold
 
 * Guardar base final en .dta
 save "$output\BDA_IND_ET_13ABR2026.dta", replace

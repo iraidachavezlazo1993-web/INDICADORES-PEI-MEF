@@ -123,32 +123,105 @@ merge 1:1 COD_UNICO using `ini', nogen
 format %td MIN_PROG_FIN MAX_ACT_FIN MAX_REG_FIN ///
            MIN_PROG_INI MAX_ACT_INI MAX_REG_INI
 
+tempfile pivot_hitos
+save `pivot_hitos'
+
+*---------------------------- 5b. BASE Rep_Inversiones_13ABR2026 --------------*
+* Base adicional con FEC_INI_EXPE_TEC / FEC_FIN_EXPE_TEC (una fila por CUI).
+* Se usará como PRIMERA fuente de fechas. Puede venir sucia: fechas como
+* texto "dd/mm/yyyy", "yyyy-mm-dd hh:mm", serial de Excel o vacío / "--".
+local archivo2 "Rep_Inversiones_13ABR2026.xlsx"
+local hoja2    "INVERSIONES"
+
+capture confirm file "$input\\`archivo2'"
+if !_rc {
+    import excel using "$input\\`archivo2'", ///
+        sheet("`hoja2'") firstrow clear allstring
+    rename *, upper
+    * El identificador en esta base viene como CODIGO_UNICO -> renombrar
+    capture rename CODIGO_UNICO COD_UNICO
+    destring COD_UNICO, replace force
+
+    * Parseo robusto de las 2 fechas
+    foreach v in FEC_INI_EXPE_TEC FEC_FIN_EXPE_TEC {
+        capture confirm variable `v'
+        if !_rc {
+            replace `v' = strtrim(`v')
+            replace `v' = "" if inlist(`v', " ", ".", "-", "--", "NA", "null")
+            gen double `v'_D = .
+            * (a) dd/mm/yyyy   ó dd-mm-yyyy
+            replace `v'_D = date(`v', "DMY") ///
+                if missing(`v'_D) & (strpos(`v',"/") > 0 | ///
+                                      regexm(`v', "^[0-9]{1,2}-[0-9]{1,2}-[0-9]{4}"))
+            * (b) yyyy-mm-dd (con o sin hora)
+            replace `v'_D = date(`v', "YMD##") ///
+                if missing(`v'_D) & regexm(`v', "^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}")
+            * (c) serial Excel
+            replace `v'_D = real(`v') + td(30dec1899) ///
+                if missing(`v'_D) & real(`v') < . & real(`v') > 10000
+            format %td `v'_D
+            drop `v'
+            rename `v'_D `v'
+        }
+        else {
+            gen double `v' = .
+            format %td `v'
+        }
+    }
+
+    keep COD_UNICO FEC_INI_EXPE_TEC FEC_FIN_EXPE_TEC
+    duplicates drop COD_UNICO, force
+    tempfile base2
+    save `base2'
+
+    * Merge con pivot de hitos (full outer)
+    use `pivot_hitos', clear
+    merge 1:1 COD_UNICO using `base2'
+    * _merge==1 : solo en pivot hitos
+    * _merge==2 : solo en Rep_Inversiones_13ABR2026 (sin hitos de ET)
+    * _merge==3 : en ambos
+    drop _merge
+}
+else {
+    di as err "NO SE ENCONTRÓ $input\\`archivo2' - se omite esa fuente"
+    gen double FEC_INI_EXPE_TEC = .
+    gen double FEC_FIN_EXPE_TEC = .
+    format %td FEC_INI_EXPE_TEC FEC_FIN_EXPE_TEC
+}
+
+* Rellenar contadores para CUIs que solo vienen de la base2
+replace CNT_INI = 0 if missing(CNT_INI)
+replace CNT_FIN = 0 if missing(CNT_FIN)
+
 *---------------------------- 6. ARMAR FECHAS INI / FIN -----------------------*
-* Regla:
-*   - INI_ET: se toma CUALQUIER fecha disponible en las 3 fuentes, con
-*             prioridad  Máx(FEC_REG_ET) > Mín(FEC_PROGRAM) > Máx(FEC_ACTUALIZADA).
-*   - FIN_ET: idéntica prioridad.
+* Regla actualizada (con la nueva base como 1ª fuente):
+*   - INI_ET: FEC_INI_EXPE_TEC -> Máx(FEC_REG_ET) -> Mín(FEC_PROGRAM) -> Máx(FEC_ACTUALIZADA)
+*   - FIN_ET: FEC_FIN_EXPE_TEC -> Máx(FEC_REG_ET) -> Mín(FEC_PROGRAM) -> Máx(FEC_ACTUALIZADA)
 *   - Si FIN_ET < INI_ET (fin anterior al inicio) se intercambian las fechas
 *     y se registra el cambio en FUENTE_INI / FUENTE_FIN.
 *   - Solo se descartan CUIs sin NINGUNA fecha de inicio o sin NINGUNA de fin.
 
 * ---- FIN_ET por prioridad ----
-gen double FIN_ET = MAX_REG_FIN
+gen double FIN_ET = FEC_FIN_EXPE_TEC
+replace    FIN_ET = MAX_REG_FIN  if missing(FIN_ET)
 replace    FIN_ET = MIN_PROG_FIN if missing(FIN_ET)
 replace    FIN_ET = MAX_ACT_FIN  if missing(FIN_ET)
 
-gen str20 FUENTE_FIN = cond(!missing(MAX_REG_FIN),  "FEC_REG_ET",     ///
-                       cond(!missing(MIN_PROG_FIN), "FEC_PROGRAM",    ///
-                       cond(!missing(MAX_ACT_FIN),  "FEC_ACTUALIZADA","SIN_FECHA")))
+gen str25 FUENTE_FIN = cond(!missing(FEC_FIN_EXPE_TEC),"FEC_FIN_EXPE_TEC", ///
+                       cond(!missing(MAX_REG_FIN),     "FEC_REG_ET",      ///
+                       cond(!missing(MIN_PROG_FIN),    "FEC_PROGRAM",     ///
+                       cond(!missing(MAX_ACT_FIN),     "FEC_ACTUALIZADA","SIN_FECHA"))))
 
 * ---- INI_ET por prioridad ----
-gen double INI_ET = MAX_REG_INI
+gen double INI_ET = FEC_INI_EXPE_TEC
+replace    INI_ET = MAX_REG_INI  if missing(INI_ET)
 replace    INI_ET = MIN_PROG_INI if missing(INI_ET)
 replace    INI_ET = MAX_ACT_INI  if missing(INI_ET)
 
-gen str20 FUENTE_INI = cond(!missing(MAX_REG_INI),  "FEC_REG_ET",     ///
-                       cond(!missing(MIN_PROG_INI), "FEC_PROGRAM",    ///
-                       cond(!missing(MAX_ACT_INI),  "FEC_ACTUALIZADA","SIN_FECHA")))
+gen str25 FUENTE_INI = cond(!missing(FEC_INI_EXPE_TEC),"FEC_INI_EXPE_TEC", ///
+                       cond(!missing(MAX_REG_INI),     "FEC_REG_ET",      ///
+                       cond(!missing(MIN_PROG_INI),    "FEC_PROGRAM",     ///
+                       cond(!missing(MAX_ACT_INI),     "FEC_ACTUALIZADA","SIN_FECHA"))))
 
 format %td INI_ET FIN_ET
 
@@ -162,7 +235,7 @@ replace INI_ET = FIN_ET  if SWAP == 1
 replace FIN_ET = _tmp    if SWAP == 1
 drop _tmp
 
-gen str20 _tmp_s = FUENTE_INI if SWAP == 1
+gen str25 _tmp_s = FUENTE_INI if SWAP == 1
 replace FUENTE_INI = FUENTE_FIN + "_(swap)" if SWAP == 1
 replace FUENTE_FIN = _tmp_s    + "_(swap)" if SWAP == 1
 drop _tmp_s
@@ -202,8 +275,11 @@ gen double PLAZO_ET = (FIN_ET - INI_ET) / 30 if !missing(INI_ET, FIN_ET)
 gen int CANT_OBRAS = max(CNT_INI, CNT_FIN)
 replace CANT_OBRAS = . if missing(PLAZO_ET)
 
-order COD_UNICO CNT_FIN MIN_PROG_FIN MAX_ACT_FIN MAX_REG_FIN FIN_ET FUENTE_FIN ///
-      CNT_INI MIN_PROG_INI MAX_ACT_INI MAX_REG_INI INI_ET FUENTE_INI          ///
+order COD_UNICO                                                       ///
+      CNT_FIN MIN_PROG_FIN MAX_ACT_FIN MAX_REG_FIN FEC_FIN_EXPE_TEC   ///
+      FIN_ET FUENTE_FIN                                               ///
+      CNT_INI MIN_PROG_INI MAX_ACT_INI MAX_REG_INI FEC_INI_EXPE_TEC   ///
+      INI_ET FUENTE_INI                                               ///
       PLAZO_ET CANT_OBRAS
 
 * --- Indicador agregado ---
@@ -231,23 +307,23 @@ export excel using "`xlsx'", ///
 
 * ----- Formatear columnas de fecha en Excel -----
 * Con el nuevo orden de columnas:
-*   C=MIN_PROG_FIN, D=MAX_ACT_FIN, E=MAX_REG_FIN, F=FIN_ET,
-*   I=MIN_PROG_INI, J=MAX_ACT_INI, K=MAX_REG_INI, L=INI_ET
+*   C=MIN_PROG_FIN, D=MAX_ACT_FIN, E=MAX_REG_FIN, F=FEC_FIN_EXPE_TEC, G=FIN_ET
+*   J=MIN_PROG_INI, K=MAX_ACT_INI, L=MAX_REG_INI, M=FEC_INI_EXPE_TEC, N=INI_ET
 putexcel set "`xlsx'", sheet("BDA") modify
 local nfil = _N + 1        // +1 por la fila de encabezado
-foreach col in C D E F I J K L {
+foreach col in C D E F G J K L M N {
     putexcel `col'2:`col'`nfil', nformat("dd/mm/yyyy")
 }
 
 * ----- Fila de sumatoria + indicador -----
-* Columnas: M=FUENTE_INI (etiqueta), N=PLAZO_ET, O=CANT_OBRAS
+* Columnas: O=FUENTE_INI (etiqueta), P=PLAZO_ET, Q=CANT_OBRAS
 local r  = _N + 3
 local r2 = `r' + 1
-putexcel M`r'  = "Sumatoria"
-putexcel N`r'  = (`sum_plazo'), nformat("#,##0.00")
-putexcel O`r'  = (`sum_cant'),  nformat("#,##0")
-putexcel M`r2' = "IND_ET_IITRIM_2026", bold
-putexcel N`r2' = (`IND_ET'),    nformat("0.0000"), bold
+putexcel O`r'  = "Sumatoria"
+putexcel P`r'  = (`sum_plazo'), nformat("#,##0.00")
+putexcel Q`r'  = (`sum_cant'),  nformat("#,##0")
+putexcel O`r2' = "IND_ET_IITRIM_2026", bold
+putexcel P`r2' = (`IND_ET'),    nformat("0.0000"), bold
 
 * Guardar base final con PLAZO_ET e IND en .dta
 save "$output\BDA_IND_ET_13ABR2026_final.dta", replace

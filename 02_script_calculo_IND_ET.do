@@ -27,48 +27,52 @@ cd "$script"
 cap log close
 log using "$output\log_IND_ET_13ABR2026.smcl", replace
 
-*---------------------------- 2. IMPORTAR -------------------------------------*
-* Cambia el nombre si tu archivo es distinto
+* FORZAR_REIMPORT = 1 para reimportar los .xlsx aunque exista el .dta cacheado
+global FORZAR_REIMPORT = 0
+
+*---------------------------- 2. IMPORTAR (con caché) -------------------------*
+* Los imports de Excel son lentos, así que se cachean en .dta dentro de
+* $output.  Si el .dta existe y FORZAR_REIMPORT=0, se reutiliza con "use".
 local archivo "Rep_Inversiones_Inicio_Fin_ET_13ABR2026.xlsx"
 local hoja    "INVERSIONES"   // usa "INI_FIN" si tu base viene con ese nombre
+local cache1  "$output\01_raw_inversiones_hitos.dta"
 
-import excel using "$input\\`archivo'", ///
-    sheet("`hoja'") firstrow clear allstring
+capture confirm file "`cache1'"
+if _rc | $FORZAR_REIMPORT == 1 {
+    di as txt "  Importando `archivo' ..."
+    import excel using "$input\\`archivo'", ///
+        sheet("`hoja'") firstrow clear allstring
+    rename *, upper
 
-* Estandarizar nombres a mayúsculas (por compatibilidad)
-rename *, upper
-
-*---------------------------- 3. LIMPIEZA -------------------------------------*
-* Fechas: FEC_PROGRAM, FEC_ACTUALIZADA y FEC_REG_ET pueden venir como:
-*   (a) texto "dd/mm/yyyy"        -> se parsea con date(v,"DMY")
-*   (b) texto "yyyy-mm-dd hh:mm"  -> se parsea con date(v,"YMD##")
-*   (c) serial Excel              -> real(v) + td(30dec1899)
-foreach v in FEC_PROGRAM FEC_ACTUALIZADA FEC_REG_ET {
-    capture confirm variable `v'
-    if !_rc {
-        replace `v' = strtrim(`v')
-        replace `v' = "" if `v' == " " | `v' == "."
-        gen double `v'_D = .
-        * (a) dd/mm/yyyy
-        replace `v'_D = date(`v', "DMY") if strpos(`v',"/") > 0
-        * (b) yyyy-mm-dd  (con o sin hora)
-        replace `v'_D = date(`v', "YMD##") ///
-            if missing(`v'_D) & strpos(`v',"-") > 0
-        * (c) serial Excel (número puro)
-        replace `v'_D = real(`v') + td(30dec1899) ///
-            if missing(`v'_D) & real(`v') < . & real(`v') > 10000
-        format %td `v'_D
-        drop `v'
-        rename `v'_D `v'
+    *---- LIMPIEZA DE FECHAS ----
+    foreach v in FEC_PROGRAM FEC_ACTUALIZADA FEC_REG_ET {
+        capture confirm variable `v'
+        if !_rc {
+            replace `v' = strtrim(`v')
+            replace `v' = "" if `v' == " " | `v' == "."
+            gen double `v'_D = .
+            replace `v'_D = date(`v', "DMY") ///
+                if missing(`v'_D) & strpos(`v',"/") > 0
+            replace `v'_D = date(`v', "YMD##") ///
+                if missing(`v'_D) & strpos(`v',"-") > 0
+            replace `v'_D = real(`v') + td(30dec1899) ///
+                if missing(`v'_D) & real(`v') < . & real(`v') > 10000
+            format %td `v'_D
+            drop `v'
+            rename `v'_D `v'
+        }
     }
+    foreach v of varlist DES_ETAPA DES_HITO {
+        replace `v' = strtrim(`v')
+    }
+    destring COD_UNICO, replace force
+    save "`cache1'", replace
+    di as res "  Caché guardado: `cache1'"
 }
-
-* Quitar espacios en blanco
-foreach v of varlist DES_ETAPA DES_HITO {
-    replace `v' = strtrim(`v')
+else {
+    di as txt "  Usando caché: `cache1'"
+    use "`cache1'", clear
 }
-
-destring COD_UNICO, replace force
 
 * Variable dummy para contar registros en el collapse
 gen byte UNO = 1
@@ -142,62 +146,66 @@ save `pivot_hitos'
 
 *---------------------------- 5b. BASE Rep_Inversiones_13ABR2026 --------------*
 * Base adicional con FEC_INI_EXPE_TEC / FEC_FIN_EXPE_TEC (una fila por CUI).
-* Se usará como PRIMERA fuente de fechas. Puede venir sucia: fechas como
-* texto "dd/mm/yyyy", "yyyy-mm-dd hh:mm", serial de Excel o vacío / "--".
+* Se cachea también en $output para no reimportar cada vez.
 local archivo2 "Rep_Inversiones_13ABR2026.xlsx"
 local hoja2    "INVERSIONES"
+local cache2   "$output\02_raw_inversiones_13abr.dta"
 
-capture confirm file "$input\\`archivo2'"
-if !_rc {
-    import excel using "$input\\`archivo2'", ///
-        sheet("`hoja2'") firstrow clear allstring
-    rename *, upper
-    * El identificador en esta base viene como CODIGO_UNICO -> renombrar
-    capture rename CODIGO_UNICO COD_UNICO
-    destring COD_UNICO, replace force
+capture confirm file "`cache2'"
+if _rc | $FORZAR_REIMPORT == 1 {
+    capture confirm file "$input\\`archivo2'"
+    if !_rc {
+        di as txt "  Importando `archivo2' ..."
+        import excel using "$input\\`archivo2'", ///
+            sheet("`hoja2'") firstrow clear allstring
+        rename *, upper
+        capture rename CODIGO_UNICO COD_UNICO
+        destring COD_UNICO, replace force
 
-    * Parseo robusto de las 2 fechas
-    foreach v in FEC_INI_EXPE_TEC FEC_FIN_EXPE_TEC {
-        capture confirm variable `v'
-        if !_rc {
-            replace `v' = strtrim(`v')
-            replace `v' = "" if inlist(`v', " ", ".", "-", "--", "NA", "null")
-            gen double `v'_D = .
-            * (a) dd/mm/yyyy   ó dd-mm-yyyy
-            replace `v'_D = date(`v', "DMY") ///
-                if missing(`v'_D) & (strpos(`v',"/") > 0 | ///
-                                      regexm(`v', "^[0-9]{1,2}-[0-9]{1,2}-[0-9]{4}"))
-            * (b) yyyy-mm-dd (con o sin hora)
-            replace `v'_D = date(`v', "YMD##") ///
-                if missing(`v'_D) & regexm(`v', "^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}")
-            * (c) serial Excel
-            replace `v'_D = real(`v') + td(30dec1899) ///
-                if missing(`v'_D) & real(`v') < . & real(`v') > 10000
-            format %td `v'_D
-            drop `v'
-            rename `v'_D `v'
+        foreach v in FEC_INI_EXPE_TEC FEC_FIN_EXPE_TEC {
+            capture confirm variable `v'
+            if !_rc {
+                replace `v' = strtrim(`v')
+                replace `v' = "" if inlist(`v', " ", ".", "-", "--", "NA", "null")
+                gen double `v'_D = .
+                replace `v'_D = date(`v', "DMY") ///
+                    if missing(`v'_D) & (strpos(`v',"/") > 0 | ///
+                        regexm(`v', "^[0-9]{1,2}-[0-9]{1,2}-[0-9]{4}"))
+                replace `v'_D = date(`v', "YMD##") ///
+                    if missing(`v'_D) & regexm(`v', "^[0-9]{4}-[0-9]{1,2}-[0-9]{1,2}")
+                replace `v'_D = real(`v') + td(30dec1899) ///
+                    if missing(`v'_D) & real(`v') < . & real(`v') > 10000
+                format %td `v'_D
+                drop `v'
+                rename `v'_D `v'
+            }
+            else {
+                gen double `v' = .
+                format %td `v'
+            }
         }
-        else {
-            gen double `v' = .
-            format %td `v'
-        }
+        keep COD_UNICO FEC_INI_EXPE_TEC FEC_FIN_EXPE_TEC
+        duplicates drop COD_UNICO, force
+        save "`cache2'", replace
+        di as res "  Caché guardado: `cache2'"
     }
+    else {
+        di as err "NO SE ENCONTRÓ $input\\`archivo2'"
+    }
+}
+else {
+    di as txt "  Usando caché: `cache2'"
+}
 
-    keep COD_UNICO FEC_INI_EXPE_TEC FEC_FIN_EXPE_TEC
-    duplicates drop COD_UNICO, force
-    tempfile base2
-    save `base2'
-
-    * Merge con pivot de hitos (full outer)
+capture confirm file "`cache2'"
+if !_rc {
     use `pivot_hitos', clear
-    merge 1:1 COD_UNICO using `base2'
-    * _merge==1 : solo en pivot hitos
-    * _merge==2 : solo en Rep_Inversiones_13ABR2026 (sin hitos de ET)
-    * _merge==3 : en ambos
+    merge 1:1 COD_UNICO using "`cache2'"
+    * _merge==1: solo en pivot hitos; 2: solo en base2; 3: ambos
     drop _merge
 }
 else {
-    di as err "NO SE ENCONTRÓ $input\\`archivo2' - se omite esa fuente"
+    use `pivot_hitos', clear
     gen double FEC_INI_EXPE_TEC = .
     gen double FEC_FIN_EXPE_TEC = .
     format %td FEC_INI_EXPE_TEC FEC_FIN_EXPE_TEC
@@ -381,11 +389,10 @@ di as txt "============================================================="
 *---------------------------- 9. EXPORTAR -------------------------------------*
 local xlsx "$output\BDA_IND_ET_13ABR2026.xlsx"
 
-* datestring() convierte los %td en texto dd/mm/yyyy para Excel;
-* keepcellfmt mantiene el formato aplicado con putexcel.
+* Las variables %td se exportan como número de serie de Excel; el formato
+* visible se aplica después con putexcel ... nformat("dd/mm/yyyy").
 export excel using "`xlsx'", ///
-    firstrow(variables) sheet("BDA") sheetreplace ///
-    datestring("DD/NN/CCYY") keepcellfmt
+    firstrow(variables) sheet("BDA") sheetreplace
 
 * ----- Formatear columnas de fecha en Excel -----
 * Con el nuevo orden de columnas:

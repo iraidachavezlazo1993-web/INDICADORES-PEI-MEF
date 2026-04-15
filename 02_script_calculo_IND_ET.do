@@ -240,6 +240,31 @@ replace FUENTE_INI = FUENTE_FIN + "_(swap)" if SWAP == 1
 replace FUENTE_FIN = _tmp_s    + "_(swap)" if SWAP == 1
 drop _tmp_s
 
+* ---- Si INI == FIN (plazo 0), intentar separarlas ----
+* Regla: cuando ambas fechas coinciden se busca una fecha alternativa
+*   1º  FIN_ET = máx de todas las candidatas de fin disponibles
+*   2º  si sigue coincidiendo, INI_ET = mín de todas las candidatas de inicio
+gen byte COINC = (!missing(INI_ET) & INI_ET == FIN_ET)
+count if COINC == 1
+local n_coinc = r(N)
+
+egen double FIN_MAX_ALL = rowmax(FEC_FIN_EXPE_TEC MAX_REG_FIN MIN_PROG_FIN MAX_ACT_FIN)
+egen double INI_MIN_ALL = rowmin(FEC_INI_EXPE_TEC MAX_REG_INI MIN_PROG_INI MAX_ACT_INI)
+
+* 1) Empujar FIN_ET al máximo posible si con eso deja de coincidir
+replace FUENTE_FIN = "MAX_FIN_AJUSTE" ///
+    if COINC == 1 & !missing(FIN_MAX_ALL) & FIN_MAX_ALL > INI_ET
+replace FIN_ET     = FIN_MAX_ALL ///
+    if COINC == 1 & !missing(FIN_MAX_ALL) & FIN_MAX_ALL > INI_ET
+
+* 2) Si tras lo anterior aún INI == FIN, jalar INI_ET al mínimo posible
+replace FUENTE_INI = "MIN_INI_AJUSTE" ///
+    if COINC == 1 & INI_ET == FIN_ET & !missing(INI_MIN_ALL) & INI_MIN_ALL < FIN_ET
+replace INI_ET     = INI_MIN_ALL ///
+    if COINC == 1 & INI_ET == FIN_ET & !missing(INI_MIN_ALL) & INI_MIN_ALL < FIN_ET
+
+drop FIN_MAX_ALL INI_MIN_ALL COINC
+
 * ---- Eliminar solo los CUIs sin ninguna fecha en alguno de los lados ----
 count if missing(INI_ET)
 local exc_sin_ini = r(N)
@@ -254,6 +279,7 @@ di as txt _n(2) "------------- DEPURACIÓN -----------------"
 di as txt "  CUIs sin NINGUNA fecha de FIN (drop): " `exc_sin_fin'
 di as txt "  CUIs sin NINGUNA fecha de INI (drop): " `exc_sin_ini'
 di as txt "  CUIs con INI/FIN intercambiados     : " `n_swap'
+di as txt "  CUIs con INI==FIN (ajustados)       : " `n_coinc'
 di as res "  CUIs válidos para el cálculo        : " `cuis_ok'
 di as txt "------------------------------------------"
 

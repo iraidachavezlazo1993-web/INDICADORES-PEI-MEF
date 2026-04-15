@@ -124,9 +124,27 @@ format %td MIN_PROG_FIN MAX_ACT_FIN MAX_REG_FIN ///
            MIN_PROG_INI MAX_ACT_INI MAX_REG_INI
 
 *---------------------------- 6. INDICADORES ----------------------------------*
-gen double INI_ET = MIN_PROG_INI
-gen double FIN_ET = MIN_PROG_FIN
+* Regla de priorización de fechas (ajuste solicitado):
+*   1º  Máx(FEC_REG_ET)        -> si falta,
+*   2º  Mín(FEC_PROGRAM)       -> si falta,
+*   3º  Máx(FEC_ACTUALIZADA)
+gen double INI_ET = MAX_REG_INI
+replace    INI_ET = MIN_PROG_INI if missing(INI_ET)
+replace    INI_ET = MAX_ACT_INI  if missing(INI_ET)
+
+gen double FIN_ET = MAX_REG_FIN
+replace    FIN_ET = MIN_PROG_FIN if missing(FIN_ET)
+replace    FIN_ET = MAX_ACT_FIN  if missing(FIN_ET)
+
 format %td INI_ET FIN_ET
+
+* Dejar huella de qué fuente se usó (útil para auditoría)
+gen str16 FUENTE_INI = cond(!missing(MAX_REG_INI),  "FEC_REG_ET",    ///
+                       cond(!missing(MIN_PROG_INI), "FEC_PROGRAM",   ///
+                       cond(!missing(MAX_ACT_INI),  "FEC_ACTUALIZADA","SIN_FECHA")))
+gen str16 FUENTE_FIN = cond(!missing(MAX_REG_FIN),  "FEC_REG_ET",    ///
+                       cond(!missing(MIN_PROG_FIN), "FEC_PROGRAM",   ///
+                       cond(!missing(MAX_ACT_FIN),  "FEC_ACTUALIZADA","SIN_FECHA")))
 
 * Plazo en meses (fórmula del calc: (FIN - INI) / 30)
 gen double PLAZO_ET = (FIN_ET - INI_ET) / 30 if !missing(INI_ET, FIN_ET)
@@ -135,8 +153,9 @@ gen double PLAZO_ET = (FIN_ET - INI_ET) / 30 if !missing(INI_ET, FIN_ET)
 gen int CANT_OBRAS = max(CNT_INI, CNT_FIN)
 replace CANT_OBRAS = . if missing(PLAZO_ET)
 
-order COD_UNICO CNT_FIN MIN_PROG_FIN MAX_ACT_FIN MAX_REG_FIN FIN_ET ///
-      CNT_INI MIN_PROG_INI MAX_ACT_INI MAX_REG_INI INI_ET PLAZO_ET CANT_OBRAS
+order COD_UNICO CNT_FIN MIN_PROG_FIN MAX_ACT_FIN MAX_REG_FIN FIN_ET FUENTE_FIN ///
+      CNT_INI MIN_PROG_INI MAX_ACT_INI MAX_REG_INI INI_ET FUENTE_INI          ///
+      PLAZO_ET CANT_OBRAS
 
 * --- Indicador agregado ---
 sum PLAZO_ET, meanonly
@@ -162,22 +181,24 @@ export excel using "`xlsx'", ///
     datestring("DD/NN/CCYY") keepcellfmt
 
 * ----- Formatear columnas de fecha en Excel -----
-* Columnas: C=MIN_PROG_FIN, D=MAX_ACT_FIN, E=MAX_REG_FIN, F=FIN_ET,
-*           H=MIN_PROG_INI, I=MAX_ACT_INI, J=MAX_REG_INI, K=INI_ET
+* Con el nuevo orden de columnas:
+*   C=MIN_PROG_FIN, D=MAX_ACT_FIN, E=MAX_REG_FIN, F=FIN_ET,
+*   I=MIN_PROG_INI, J=MAX_ACT_INI, K=MAX_REG_INI, L=INI_ET
 putexcel set "`xlsx'", sheet("BDA") modify
 local nfil = _N + 1        // +1 por la fila de encabezado
-foreach col in C D E F H I J K {
+foreach col in C D E F I J K L {
     putexcel `col'2:`col'`nfil', nformat("dd/mm/yyyy")
 }
 
 * ----- Fila de sumatoria + indicador -----
+* Columnas: M=FUENTE_INI (etiqueta), N=PLAZO_ET, O=CANT_OBRAS
 local r  = _N + 3
 local r2 = `r' + 1
-putexcel K`r'  = "Sumatoria"
-putexcel L`r'  = (`sum_plazo'), nformat("#,##0.00")
-putexcel M`r'  = (`sum_cant'),  nformat("#,##0")
-putexcel K`r2' = "IND_ET_IITRIM_2026", bold
-putexcel L`r2' = (`IND_ET'),    nformat("0.0000"), bold
+putexcel M`r'  = "Sumatoria"
+putexcel N`r'  = (`sum_plazo'), nformat("#,##0.00")
+putexcel O`r'  = (`sum_cant'),  nformat("#,##0")
+putexcel M`r2' = "IND_ET_IITRIM_2026", bold
+putexcel N`r2' = (`IND_ET'),    nformat("0.0000"), bold
 
 * Guardar base final en .dta
 save "$output\BDA_IND_ET_13ABR2026.dta", replace

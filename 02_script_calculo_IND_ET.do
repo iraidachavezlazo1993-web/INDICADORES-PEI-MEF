@@ -283,6 +283,42 @@ replace INI_ET     = INI_MIN_ALL ///
 
 drop FIN_MAX_ALL INI_MIN_ALL COINC
 
+* ---- Si PLAZO_ET > 2 meses: usar mínimas de candidatas en ambos lados ----
+* Regla: si con la prioridad anterior el plazo del CUI supera 2 meses,
+* se reemplazan INI_ET y FIN_ET por la fecha MÍNIMA disponible en cada
+* conjunto de candidatas (rowmin ignora missings).  Esto reduce el plazo
+* hacia el valor temporalmente más temprano disponible.
+gen double _plazo_tmp = (FIN_ET - INI_ET) / 30 if !missing(INI_ET, FIN_ET)
+gen byte   MAYOR2     = (_plazo_tmp > 2 & !missing(_plazo_tmp))
+count if MAYOR2 == 1
+local n_mayor2 = r(N)
+
+egen double FIN_MIN_ALL = rowmin(FEC_FIN_EXPE_TEC MAX_REG_FIN MIN_PROG_FIN MAX_ACT_FIN)
+egen double INI_MIN_CAND = rowmin(FEC_INI_EXPE_TEC MAX_REG_INI MIN_PROG_INI MAX_ACT_INI)
+
+replace FUENTE_FIN = "MIN_FIN_(>2m)" if MAYOR2 == 1 & !missing(FIN_MIN_ALL)
+replace FIN_ET     = FIN_MIN_ALL    if MAYOR2 == 1 & !missing(FIN_MIN_ALL)
+replace FUENTE_INI = "MIN_INI_(>2m)" if MAYOR2 == 1 & !missing(INI_MIN_CAND)
+replace INI_ET     = INI_MIN_CAND   if MAYOR2 == 1 & !missing(INI_MIN_CAND)
+
+drop _plazo_tmp FIN_MIN_ALL INI_MIN_CAND MAYOR2
+
+* ---- Re-swap de seguridad: si tras los ajustes FIN < INI, intercambiar ----
+replace SWAP = 0
+replace SWAP = 1 if !missing(INI_ET) & !missing(FIN_ET) & FIN_ET < INI_ET
+count if SWAP == 1
+local n_swap2 = r(N)
+
+gen double _tmp = INI_ET if SWAP == 1
+replace INI_ET = FIN_ET  if SWAP == 1
+replace FIN_ET = _tmp    if SWAP == 1
+drop _tmp
+
+gen str25 _tmp_s = FUENTE_INI if SWAP == 1
+replace FUENTE_INI = FUENTE_FIN + "_(reswap)" if SWAP == 1
+replace FUENTE_FIN = _tmp_s    + "_(reswap)" if SWAP == 1
+drop _tmp_s
+
 * ---- Eliminar solo los CUIs sin ninguna fecha en alguno de los lados ----
 count if missing(INI_ET)
 local exc_sin_ini = r(N)
@@ -298,6 +334,8 @@ di as txt "  CUIs sin NINGUNA fecha de FIN (drop): " `exc_sin_fin'
 di as txt "  CUIs sin NINGUNA fecha de INI (drop): " `exc_sin_ini'
 di as txt "  CUIs con INI/FIN intercambiados     : " `n_swap'
 di as txt "  CUIs con INI==FIN (ajustados)       : " `n_coinc'
+di as txt "  CUIs con PLAZO > 2m (ajust. a MIN)  : " `n_mayor2'
+di as txt "  Re-swaps tras el ajuste >2m         : " `n_swap2'
 di as res "  CUIs válidos para el cálculo        : " `cuis_ok'
 di as txt "------------------------------------------"
 

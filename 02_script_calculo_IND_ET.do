@@ -191,7 +191,29 @@ drop EXCLUIR
 * Plazo en meses (fórmula del calc: (FIN - INI) / 30)
 gen double PLAZO_ET = (FIN_ET - INI_ET) / 30 if !missing(INI_ET, FIN_ET)
 
-* Salvaguarda: si por algún motivo quedó negativo, lo descartamos
+* ---- Ajuste para CUIs con PLAZO_ET = 0 ----
+* Regla: cuando el plazo sale 0 con la prioridad anterior, se reconstruye con
+*   INI_ET = máx {MAX_REG_INI, MIN_PROG_INI, MAX_ACT_INI}
+*   FIN_ET = mín {MAX_REG_FIN, MIN_PROG_FIN, MAX_ACT_FIN}
+* (rmax/rmin ignoran missing)
+count if PLAZO_ET == 0
+local n_cero = r(N)
+
+egen double INI_ALT = rowmax(MAX_REG_INI MIN_PROG_INI MAX_ACT_INI)
+egen double FIN_ALT = rowmin(MAX_REG_FIN MIN_PROG_FIN MAX_ACT_FIN)
+format %td INI_ALT FIN_ALT
+
+replace INI_ET      = INI_ALT                          if PLAZO_ET == 0
+replace FIN_ET      = FIN_ALT                          if PLAZO_ET == 0
+replace FUENTE_INI  = "MAX_DE_CANDIDATAS"              if PLAZO_ET == 0
+replace FUENTE_FIN  = "MIN_DE_CANDIDATAS"              if PLAZO_ET == 0
+replace PLAZO_ET    = (FIN_ET - INI_ET) / 30           if PLAZO_ET == 0 & ///
+                                                          !missing(INI_ET, FIN_ET)
+drop INI_ALT FIN_ALT
+
+di as txt "  CUIs con PLAZO_ET = 0 recalculados   : " `n_cero'
+
+* Salvaguarda: si tras el ajuste hay negativos, se descartan
 count if PLAZO_ET < 0
 if r(N) > 0 {
     di as err "  Advertencia: se descartan " r(N) " CUIs con PLAZO_ET negativo"

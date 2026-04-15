@@ -57,6 +57,9 @@ foreach v of varlist DES_ETAPA DES_HITO {
 
 destring COD_UNICO, replace force
 
+* Variable dummy para contar registros en el collapse
+gen byte UNO = 1
+
 *---------------------------- 4. MARCAR HITOS ---------------------------------*
 * Hitos que delimitan el plazo de elaboración del ET / Documento Equivalente
 * (cubre las dos convenciones observadas: versión larga y versión corta)
@@ -80,20 +83,22 @@ keep if ES_INICIO==1 | ES_FIN==1
 *---------------------------- 5. PIVOT POR CUI --------------------------------*
 preserve
     keep if ES_INICIO==1
-    collapse (count)  CNT_INI = COD_UNICO      ///
-             (min)    MIN_PROG_INI = FEC_PROGRAM   ///
+    collapse (sum)    CNT_INI      = UNO             ///
+             (min)    MIN_PROG_INI = FEC_PROGRAM     ///
              (max)    MAX_ACT_INI  = FEC_ACTUALIZADA ///
-             (max)    MAX_REG_INI  = FEC_REG_ET, by(COD_UNICO)
+             (max)    MAX_REG_INI  = FEC_REG_ET,     ///
+             by(COD_UNICO)
     tempfile ini
     save `ini'
 restore
 
 preserve
     keep if ES_FIN==1
-    collapse (count)  CNT_FIN = COD_UNICO      ///
-             (min)    MIN_PROG_FIN = FEC_PROGRAM   ///
+    collapse (sum)    CNT_FIN      = UNO             ///
+             (min)    MIN_PROG_FIN = FEC_PROGRAM     ///
              (max)    MAX_ACT_FIN  = FEC_ACTUALIZADA ///
-             (max)    MAX_REG_FIN  = FEC_REG_ET, by(COD_UNICO)
+             (max)    MAX_REG_FIN  = FEC_REG_ET,     ///
+             by(COD_UNICO)
     tempfile fin
     save `fin'
 restore

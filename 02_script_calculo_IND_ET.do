@@ -73,6 +73,20 @@ destring COD_UNICO, replace force
 * Variable dummy para contar registros en el collapse
 gen byte UNO = 1
 
+*---------------------------- 3b. CANT_OBRAS (expedientes únicos) -------------*
+* CANT_OBRAS = número distinto de ID_EXP_TECNICO por CUI, calculado ANTES
+* de filtrar por hitos (cada expediente = una obra).
+preserve
+    keep COD_UNICO ID_EXP_TECNICO
+    keep if !missing(COD_UNICO) & !missing(ID_EXP_TECNICO) & ID_EXP_TECNICO != ""
+    duplicates drop
+    bysort COD_UNICO: gen int CANT_OBRAS = _N
+    bysort COD_UNICO: keep if _n == 1
+    drop ID_EXP_TECNICO
+    tempfile obras
+    save `obras'
+restore
+
 *---------------------------- 4. MARCAR HITOS ---------------------------------*
 * Hitos que delimitan el plazo de elaboración del ET / Documento Equivalente
 * (cubre las dos convenciones observadas: versión larga y versión corta)
@@ -193,6 +207,10 @@ else {
 replace CNT_INI = 0 if missing(CNT_INI)
 replace CNT_FIN = 0 if missing(CNT_FIN)
 
+* ---- Anexar CANT_OBRAS calculado al inicio (expedientes únicos) ----
+merge 1:1 COD_UNICO using `obras', keep(master match) nogen
+replace CANT_OBRAS = 0 if missing(CANT_OBRAS)
+
 *---------------------------- 6. ARMAR FECHAS INI / FIN -----------------------*
 * Regla actualizada (con la nueva base como 1ª fuente):
 *   - INI_ET: FEC_INI_EXPE_TEC -> Máx(FEC_REG_ET) -> Mín(FEC_PROGRAM) -> Máx(FEC_ACTUALIZADA)
@@ -297,8 +315,8 @@ use "$output\BDA_IND_ET_13ABR2026.dta", clear
 * Plazo en meses (fórmula del calc: (FIN - INI) / 30)
 gen double PLAZO_ET = (FIN_ET - INI_ET) / 30 if !missing(INI_ET, FIN_ET)
 
-* Cantidad de obras = máximo entre nº de docs de inicio y de culminación
-gen int CANT_OBRAS = max(CNT_INI, CNT_FIN)
+* CANT_OBRAS ya viene de la base original (expedientes únicos por CUI);
+* si el CUI no tiene plazo (falta INI o FIN) lo excluimos del cálculo.
 replace CANT_OBRAS = . if missing(PLAZO_ET)
 
 order COD_UNICO                                                       ///

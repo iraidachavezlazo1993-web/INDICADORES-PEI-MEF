@@ -213,6 +213,50 @@ order COD_UNICO ID_NRO_SEG NIVEL ///
 save "`bda'", replace
 di as res "  Pivot final guardado: `bda'"
 
+*---------------------------- 6b. CUADRO DE SUMAS POR NIVEL -------------------*
+* Reproduce exactamente la tabla dinámica de la hoja BDA del _calc:
+*   Nivel | Suma de cant_obras | Suma de POR_AVAN_PROG | Suma de POR_AVAN_REAL |
+*          Suma de MTO_AVAN_PROG | Suma de MTO_AVAN_REAL |
+*          Suma de PIM (año actual) | Suma de COSTO ACTUALIZADO
+* con fila "Total general" al final.
+local cuadro "$output\CUADRO_SUMAS_NIVEL_13ABR2026.dta"
+
+preserve
+    use "`bda'", clear
+    gen byte CANT_OBRAS = 1
+    collapse (sum) CANT_OBRAS POR_AVAN_PROG POR_AVAN_REAL ///
+                   MTO_AVAN_PROG MTO_AVAN_REAL             ///
+                   PIM_AÑO_ACTUAL COSTO_ACT,               ///
+             by(NIVEL)
+
+    * Fila Total general
+    local nfilas = _N + 1
+    set obs `nfilas'
+    replace NIVEL = "Total general" in `nfilas'
+    foreach v in CANT_OBRAS POR_AVAN_PROG POR_AVAN_REAL ///
+                 MTO_AVAN_PROG MTO_AVAN_REAL            ///
+                 PIM_AÑO_ACTUAL COSTO_ACT {
+        qui sum `v' if NIVEL != "Total general", meanonly
+        replace `v' = r(sum) in `nfilas'
+    }
+
+    order NIVEL CANT_OBRAS POR_AVAN_PROG POR_AVAN_REAL ///
+          MTO_AVAN_PROG MTO_AVAN_REAL                  ///
+          PIM_AÑO_ACTUAL COSTO_ACT
+
+    label variable CANT_OBRAS     "Suma de cant_obras"
+    label variable POR_AVAN_PROG  "Suma de POR_AVAN_PROG"
+    label variable POR_AVAN_REAL  "Suma de POR_AVAN_REAL"
+    label variable MTO_AVAN_PROG  "Suma de MTO_AVAN_PROG"
+    label variable MTO_AVAN_REAL  "Suma de MTO_AVAN_REAL"
+    label variable PIM_AÑO_ACTUAL "Suma de PIM año actual"
+    label variable COSTO_ACT      "Suma de COSTO ACTUALIZADO"
+
+    save "`cuadro'", replace
+    di as res "  Cuadro por nivel guardado: `cuadro'"
+    list, sep(0) noobs abbreviate(20)
+restore
+
 *---------------------------- 7. INDICADOR ------------------------------------*
 use "`bda'", clear
 
@@ -304,7 +348,19 @@ use "`bda'", clear
 export excel using "`xlsx'", ///
     firstrow(variables) sheet("BDA") sheetreplace
 
-* 8b) Hoja TABLA (resumen por nivel + indicador global)
+* 8b) Hoja CUADRO (sumas por Nivel con Total general, formato del _calc)
+use "`cuadro'", clear
+export excel using "`xlsx'", ///
+    firstrow(varlabels) sheet("CUADRO") sheetreplace
+
+* Formatear números en la hoja CUADRO (B:H)
+putexcel set "`xlsx'", sheet("CUADRO") modify
+local nf = _N + 1
+foreach col in B C D E F G H {
+    putexcel `col'2:`col'`nf', nformat("#,##0.00")
+}
+
+* 8c) Hoja TABLA (resumen por nivel + indicadores globales)
 use "`tabla'", clear
 export excel using "`xlsx'", ///
     firstrow(variables) sheet("TABLA") sheetreplace

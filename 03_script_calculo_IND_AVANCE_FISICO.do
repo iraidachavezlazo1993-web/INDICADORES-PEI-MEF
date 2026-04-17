@@ -221,8 +221,13 @@ sum MTO_AVAN_REAL, meanonly
 local TOT_MTO = r(sum)
 
 * Tabla resumen por NIVEL (se escribe directo a .dta persistente)
+* Campos: NIVEL_G, CANT (obras), PORC_PROG, PORC_REAL, RATIO=PR/PP,
+*         PESO=Σ MTO_REAL_N/Σ MTO_REAL_total, INDICADOR=RATIO*PESO,
+*         COSTO_N=Σ COSTO_ACT del nivel, NUMERADOR=COSTO_N*RATIO*PESO
+*         (= COSTO_N * POR_REAL/POR_PROG * MTO_REAL_N / Σ MTO_REAL_total).
 tempname P
-postfile `P' str8 NIVEL_G CANT double PORC_PROG PORC_REAL RATIO PESO INDICADOR ///
+postfile `P' str8 NIVEL_G CANT ///
+    double PORC_PROG PORC_REAL RATIO PESO INDICADOR COSTO_N NUMERADOR ///
     using "`tabla'", replace
 
 levelsof NIVEL, local(niveles) clean
@@ -238,25 +243,39 @@ foreach n of local niveles {
     qui sum MTO_AVAN_REAL if NIVEL == "`n'", meanonly
     local mreal_n = r(sum)
 
-    local ratio = cond(`pp' > 0, `pr'/`pp', .)
-    local peso  = cond(`TOT_MTO' > 0, `mreal_n'/`TOT_MTO', .)
-    local ind_n = cond(`ratio' < . & `peso' < ., `ratio'*`peso', .)
+    qui sum COSTO_ACT if NIVEL == "`n'", meanonly
+    local costo_n = r(sum)
 
-    post `P' ("`n'") (`cant') (`pp') (`pr') (`ratio') (`peso') (`ind_n')
+    local ratio     = cond(`pp' > 0, `pr'/`pp', .)
+    local peso      = cond(`TOT_MTO' > 0, `mreal_n'/`TOT_MTO', .)
+    local ind_n     = cond(`ratio' < . & `peso' < ., `ratio'*`peso', .)
+    local numerador = cond(`ind_n' < . & `costo_n' < ., `costo_n'*`ind_n', .)
+
+    post `P' ("`n'") (`cant') (`pp') (`pr') (`ratio') (`peso') ///
+             (`ind_n') (`costo_n') (`numerador')
 }
 postclose `P'
 
-* Leer la tabla y calcular los indicadores globales (sin preserve/restore
-* para evitar confusiones; al final se recarga el BDA para el export).
+* Leer la tabla y calcular los indicadores globales
 use "`tabla'", clear
 list, sep(0) noobs abbreviate(12)
 
 sum INDICADOR, meanonly
 scalar IND_PROM  = r(mean)
 scalar IND_PONDE = r(sum)
+
+sum NUMERADOR, meanonly
+scalar NUM_TOTAL = r(sum)
+sum COSTO_N,   meanonly
+scalar COSTO_TOTAL = r(sum)
+scalar IND_NUM_COSTO = cond(COSTO_TOTAL > 0, NUM_TOTAL/COSTO_TOTAL, .)
+
 di as txt _n(2) "================================================================"
 di as txt "   IND_AVANCE_FISICO (promedio de niveles, fórmula _calc) = " %9.4f IND_PROM
 di as txt "   IND_AVANCE_PONDERADO (Σ ratio_N * peso_N)              = " %9.4f IND_PONDE
+di as txt "   IND_NUM_COSTO (Σ Numerador_N / Σ Costo_N)              = " %9.4f IND_NUM_COSTO
+di as txt "   Σ NUMERADOR                                            = " %16.2f NUM_TOTAL
+di as txt "   Σ COSTO_ACT                                            = " %16.2f COSTO_TOTAL
 di as txt "================================================================"
 
 *---------------------------- 8. EXPORTAR A EXCEL -----------------------------*
@@ -272,13 +291,17 @@ use "`tabla'", clear
 export excel using "`xlsx'", ///
     firstrow(variables) sheet("TABLA") sheetreplace
 
+* En putexcel las opciones van SEPARADAS POR ESPACIOS (no por comas).
 putexcel set "`xlsx'", sheet("TABLA") modify
 local r  = _N + 3
 local r2 = `r' + 1
+local r3 = `r' + 2
 putexcel A`r'  = "IND_AVANCE_FISICO (prom. niveles)", bold
-putexcel G`r'  = (IND_PROM),  nformat("0.0000"), bold
+putexcel G`r'  = (IND_PROM),      nformat("0.0000") bold
 putexcel A`r2' = "IND_AVANCE_PONDERADO (Σ ratio*peso)"
-putexcel G`r2' = (IND_PONDE), nformat("0.0000")
+putexcel G`r2' = (IND_PONDE),     nformat("0.0000")
+putexcel A`r3' = "IND_NUM_COSTO (Σ Numerador / Σ Costo)"
+putexcel G`r3' = (IND_NUM_COSTO), nformat("0.0000")
 
 * 8c) Guardar BDA final con los mismos resultados
 use "`bda'", clear

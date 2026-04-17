@@ -223,10 +223,12 @@ local cuadro "$output\CUADRO_SUMAS_NIVEL_13ABR2026.dta"
 
 preserve
     use "`bda'", clear
-    gen byte CANT_OBRAS = 1
-    collapse (sum) CANT_OBRAS POR_AVAN_PROG POR_AVAN_REAL ///
-                   MTO_AVAN_PROG MTO_AVAN_REAL             ///
-                   PIM_AÑO_ACTUAL COSTO_ACT,               ///
+    * CANT_OBRAS = Cuenta de ID_NRO_SEG por Nivel (cada obra = 1 ID_NRO_SEG
+    * en el BDA pivotado).  Las demás columnas son sumas del Nivel.
+    collapse (count) CANT_OBRAS = ID_NRO_SEG   ///
+             (sum)   POR_AVAN_PROG POR_AVAN_REAL ///
+                     MTO_AVAN_PROG MTO_AVAN_REAL ///
+                     PIM_AÑO_ACTUAL COSTO_ACT,   ///
              by(NIVEL)
 
     * Fila Total general

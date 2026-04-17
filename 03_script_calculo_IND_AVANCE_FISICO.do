@@ -21,6 +21,12 @@
 *   4) Indicador global:
 *        IND_AVANCE_FISICO = Σ INDICADOR_N / (# Niveles)          (calc file)
 *        IND_AVANCE_PONDERADO = Σ INDICADOR_N                     (alternativa)
+*
+* IMPORTANTE: las bases son pesadas, por eso CADA archivo Excel que se
+* importa se guarda inmediatamente como .dta en $output.  Así se puede
+* re-ejecutar desde cualquier bloque sin volver a leer el Excel.  Si el
+* .dta ya existe, el bloque de importación se SALTA (basta borrar el .dta
+* para forzar una reimportación).
 ********************************************************************************
 
 clear all
@@ -37,15 +43,33 @@ cd "$script"
 cap log close
 log using "$output\log_IND_AVANCE_FISICO_13ABR2026.smcl", replace
 
-*---------------------------- 2. IMPORTAR -------------------------------------*
-local archivo "Rep_Avance_Fisico_programado_F12_13ABR2026.xlsx"
-local hoja    "INVERSIONES"
+* Rutas persistentes (todas son .dta, nunca tempfiles)
+local raw_f12   "$output\RAW_F12_13ABR2026.dta"          // base F12 cruda
+local raw_inv   "$output\RAW_INVERSIONES_13ABR2026.dta"  // base aux cruda
+local meta_f12  "$output\META_F12_13ABR2026.dta"         // TIP_INVERSION / DES_MODALIDAD
+local pivot_f12 "$output\PIVOT_F12_13ABR2026.dta"        // pivot por (CUI, SEG)
+local aux_nivel "$output\AUX_NIVEL_13ABR2026.dta"        // NIVEL/PIM/COSTO por CUI
+local bda       "$output\BDA_IND_AVANCE_FISICO_13ABR2026.dta"
+local tabla     "$output\TABLA_IND_AVANCE_FISICO.dta"
 
-import excel using "$input\\`archivo'", ///
-    sheet("`hoja'") firstrow clear allstring
+*---------------------------- 2. IMPORTAR F12 ---------------------------------*
+* Si el .dta ya existe no se vuelve a importar el Excel.
+capture confirm file "`raw_f12'"
+if _rc {
+    local archivo "Rep_Avance_Fisico_programado_F12_13ABR2026.xlsx"
+    local hoja    "INVERSIONES"
+    di as txt "Importando `archivo' (primera vez) ..."
+    import excel using "$input\\`archivo'", ///
+        sheet("`hoja'") firstrow clear allstring
+    rename *, upper
+    save "`raw_f12'", replace
+    di as res "  Guardado: `raw_f12'"
+}
+else {
+    di as txt "Reutilizando `raw_f12' (ya existe)."
+}
 
-* Estandarizar nombres a mayúsculas (por compatibilidad)
-rename *, upper
+use "`raw_f12'", clear
 
 *---------------------------- 3. LIMPIEZA -------------------------------------*
 * Identificadores
@@ -55,15 +79,18 @@ destring COD_UNICO ID_NRO_SEG ID_HITO PERIODO, replace force
 foreach v in POR_AVAN_PROG POR_AVAN_REAL MTO_AVAN_PROG MTO_AVAN_REAL POR_APROBADO {
     capture confirm variable `v'
     if !_rc {
-        replace `v' = strtrim(`v')
-        replace `v' = "" if inlist(`v', " ", ".", "-", "--", "NA", "null")
+        capture confirm string variable `v'
+        if !_rc {
+            replace `v' = strtrim(`v')
+            replace `v' = "" if inlist(`v', " ", ".", "-", "--", "NA", "null")
+        }
         destring `v', replace force
     }
 }
 
 * Fechas: FEC_INICIO, FEC_FINAL pueden venir como texto o serial Excel
 foreach v in FEC_INICIO FEC_FINAL {
-    capture confirm variable `v'
+    capture confirm string variable `v'
     if !_rc {
         replace `v' = strtrim(`v')
         replace `v' = "" if inlist(`v', " ", ".", "-", "--", "NA", "null")
@@ -83,94 +110,120 @@ foreach v in FEC_INICIO FEC_FINAL {
 drop if missing(COD_UNICO) | missing(ID_NRO_SEG)
 
 *---------------------------- 4. PIVOT POR (CUI, SEG) -------------------------*
-* Replica el comportamiento observado en la hoja BDA del archivo _calc:
-* una fila por combinación (COD_UNICO, ID_NRO_SEG) con el valor máximo
-* de cada métrica.  TIP_INVERSION / DES_MODALIDAD se conservan (moda).
+* Se guarda primero META (TIP_INVERSION / DES_MODALIDAD) en .dta persistente.
 preserve
     keep COD_UNICO ID_NRO_SEG TIP_INVERSION DES_MODALIDAD
     duplicates drop
-    bysort COD_UNICO ID_NRO_SEG (TIP_INVERSION DES_MODALIDAD): ///
-        keep if _n == 1
-    tempfile meta
-    save `meta'
+    bysort COD_UNICO ID_NRO_SEG (TIP_INVERSION DES_MODALIDAD): keep if _n == 1
+    save "`meta_f12'", replace
+    di as res "  Guardado: `meta_f12'"
 restore
 
 collapse (max) POR_AVAN_PROG POR_AVAN_REAL MTO_AVAN_PROG MTO_AVAN_REAL ///
          (count) N_PERIODOS = PERIODO, ///
          by(COD_UNICO ID_NRO_SEG)
 
-merge 1:1 COD_UNICO ID_NRO_SEG using `meta', nogen
+merge 1:1 COD_UNICO ID_NRO_SEG using "`meta_f12'", nogen
 
-tempfile pivot_f12
-save `pivot_f12'
+save "`pivot_f12'", replace
+di as res "  Guardado: `pivot_f12'"
 
-*---------------------------- 5. MERGE CON BASE AUXILIAR ----------------------*
-* Base adicional con NIVEL (GL/GN/GR), PIM 2025 y COSTO_ACTUALIZADO, una
-* fila por CUI.  Si no existe se continúa con el cálculo global sin la
-* descomposición por nivel de gobierno.
+*---------------------------- 5. BASE AUXILIAR (NIVEL / PIM / COSTO) ----------*
+* Se intenta cruzar con Rep_Inversiones_13ABR2026.xlsx para obtener NIVEL
+* de gobierno, PIM 2025 y Costo Actualizado por CUI.  Si no se encuentra
+* el Excel se continúa sin desagregación por nivel.
 local archivo2 "Rep_Inversiones_13ABR2026.xlsx"
 local hoja2    "INVERSIONES"
 
-capture confirm file "$input\\`archivo2'"
-if !_rc {
-    import excel using "$input\\`archivo2'", ///
-        sheet("`hoja2'") firstrow clear allstring
-    rename *, upper
-    capture rename CODIGO_UNICO COD_UNICO
-    capture rename NIVEL_GOB    NIVEL
-    capture rename PIM2025      PIM_2025
-    capture rename COSTO_ACTUALIZADO COSTO_ACT
-    destring COD_UNICO, replace force
-    foreach v in PIM_2025 COSTO_ACT {
-        capture confirm variable `v'
-        if !_rc destring `v', replace force
-    }
-    capture confirm variable NIVEL
+* 5a) Importar (o reutilizar) la base auxiliar
+capture confirm file "`aux_nivel'"
+if _rc {
+    capture confirm file "$input\\`archivo2'"
     if !_rc {
-        replace NIVEL = strtrim(upper(NIVEL))
-        replace NIVEL = "GL" if inlist(NIVEL,"GOBIERNO LOCAL","LOCAL")
-        replace NIVEL = "GN" if inlist(NIVEL,"GOBIERNO NACIONAL","NACIONAL")
-        replace NIVEL = "GR" if inlist(NIVEL,"GOBIERNO REGIONAL","REGIONAL")
-    }
-    keep COD_UNICO NIVEL PIM_2025 COSTO_ACT
-    duplicates drop COD_UNICO, force
-    tempfile aux
-    save `aux'
+        di as txt "Importando `archivo2' (primera vez) ..."
+        import excel using "$input\\`archivo2'", ///
+            sheet("`hoja2'") firstrow clear allstring
+        rename *, upper
+        save "`raw_inv'", replace
+        di as res "  Guardado: `raw_inv'"
 
-    use `pivot_f12', clear
-    merge m:1 COD_UNICO using `aux', keep(master match) nogen
+        capture rename CODIGO_UNICO      COD_UNICO
+        capture rename NIVEL_GOB         NIVEL
+        capture rename PIM2026           PIM_AÑO_ACTUAL
+        capture rename COSTO_ACTUALIZADO COSTO_ACT
+        destring COD_UNICO, replace force
+        foreach v in PIM_AÑO_ACTUAL COSTO_ACT {
+            capture confirm variable `v'
+            if !_rc destring `v', replace force
+        }
+        capture confirm variable NIVEL
+        if !_rc {
+            replace NIVEL = strtrim(upper(NIVEL))
+            replace NIVEL = "GL" if inlist(NIVEL,"GOBIERNO LOCAL","LOCAL")
+            replace NIVEL = "GN" if inlist(NIVEL,"GOBIERNO NACIONAL","NACIONAL")
+            replace NIVEL = "GR" if inlist(NIVEL,"GOBIERNO REGIONAL","REGIONAL")
+        }
+        else {
+            gen str2 NIVEL = ""
+        }
+        foreach v in PIM_AÑO_ACTUAL COSTO_ACT {
+            capture confirm variable `v'
+            if _rc gen double `v' = .
+        }
+        keep COD_UNICO NIVEL PIM_AÑO_ACTUAL COSTO_ACT
+        duplicates drop COD_UNICO, force
+        save "`aux_nivel'", replace
+        di as res "  Guardado: `aux_nivel'"
+    }
+    else {
+        di as err "NO SE ENCONTRÓ $input\\`archivo2' - se creará AUX vacío"
+        clear
+        set obs 0
+        gen long   COD_UNICO      = .
+        gen str2   NIVEL          = ""
+        gen double PIM_AÑO_ACTUAL = .
+        gen double COSTO_ACT      = .
+        save "`aux_nivel'", replace
+    }
 }
 else {
-    di as err "NO SE ENCONTRÓ $input\\`archivo2' - se omite el cruce con NIVEL/PIM/Costo"
-    use `pivot_f12', clear
-    gen str2  NIVEL     = ""
-    gen double PIM_2025  = .
-    gen double COSTO_ACT = .
+    di as txt "Reutilizando `aux_nivel' (ya existe)."
 }
 
-* Si no se pudo recuperar NIVEL, marcamos TODO como "--" para que el
-* indicador se calcule sin descomposición por nivel.
+* 5b) Merge pivot F12 <-> base auxiliar
+use "`pivot_f12'", clear
+merge m:1 COD_UNICO using "`aux_nivel'", keep(master match) nogen
+
+* Si NIVEL vino vacío o faltante, marcamos "--" para que el indicador
+* se calcule sin descomposición por nivel.
+capture confirm variable NIVEL
+if _rc gen str2 NIVEL = ""
 replace NIVEL = "--" if missing(NIVEL) | NIVEL == ""
+
+foreach v in PIM_AÑO_ACTUAL COSTO_ACT {
+    capture confirm variable `v'
+    if _rc gen double `v' = .
+}
 
 *---------------------------- 6. GUARDAR BDA ----------------------------------*
 order COD_UNICO ID_NRO_SEG NIVEL ///
       POR_AVAN_PROG POR_AVAN_REAL MTO_AVAN_PROG MTO_AVAN_REAL ///
-      PIM_2025 COSTO_ACT N_PERIODOS TIP_INVERSION DES_MODALIDAD
+      PIM_AÑO_ACTUAL COSTO_ACT N_PERIODOS TIP_INVERSION DES_MODALIDAD
 
-save "$output\BDA_IND_AVANCE_FISICO_13ABR2026.dta", replace
-di as res "  Pivot guardado: $output\BDA_IND_AVANCE_FISICO_13ABR2026.dta"
+save "`bda'", replace
+di as res "  Pivot final guardado: `bda'"
 
 *---------------------------- 7. INDICADOR ------------------------------------*
-use "$output\BDA_IND_AVANCE_FISICO_13ABR2026.dta", clear
+use "`bda'", clear
 
 * Σ MTO_AVAN_REAL total (denominador del peso)
 sum MTO_AVAN_REAL, meanonly
 local TOT_MTO = r(sum)
 
-* Tabla resumen por NIVEL
+* Tabla resumen por NIVEL (se escribe directo a .dta persistente)
 tempname P
 postfile `P' str8 NIVEL_G CANT double PORC_PROG PORC_REAL RATIO PESO INDICADOR ///
-    using "$output\TABLA_IND_AVANCE_FISICO.dta", replace
+    using "`tabla'", replace
 
 levelsof NIVEL, local(niveles) clean
 foreach n of local niveles {
@@ -193,44 +246,42 @@ foreach n of local niveles {
 }
 postclose `P'
 
-preserve
-    use "$output\TABLA_IND_AVANCE_FISICO.dta", clear
-    list, sep(0) noobs abbreviate(12)
+* Leer la tabla y calcular los indicadores globales (sin preserve/restore
+* para evitar confusiones; al final se recarga el BDA para el export).
+use "`tabla'", clear
+list, sep(0) noobs abbreviate(12)
 
-    * Indicador global: promedio simple de los indicadores por nivel (fórmula
-    * del archivo _calc).  Se reporta también la suma ponderada (coincide con
-    * el ratio global cuando hay un solo nivel).
-    sum INDICADOR, meanonly
-    scalar IND_PROM = r(mean)
-    scalar IND_PONDE = r(sum)
-    di as txt _n(2) "================================================================"
-    di as txt "   IND_AVANCE_FISICO (promedio de niveles, fórmula _calc) = " %9.4f IND_PROM
-    di as txt "   IND_AVANCE_PONDERADO (Σ ratio_N * peso_N)              = " %9.4f IND_PONDE
-    di as txt "================================================================"
-restore
+sum INDICADOR, meanonly
+scalar IND_PROM  = r(mean)
+scalar IND_PONDE = r(sum)
+di as txt _n(2) "================================================================"
+di as txt "   IND_AVANCE_FISICO (promedio de niveles, fórmula _calc) = " %9.4f IND_PROM
+di as txt "   IND_AVANCE_PONDERADO (Σ ratio_N * peso_N)              = " %9.4f IND_PONDE
+di as txt "================================================================"
 
-*---------------------------- 8. EXPORTAR -------------------------------------*
+*---------------------------- 8. EXPORTAR A EXCEL -----------------------------*
 local xlsx "$output\BDA_IND_AVANCE_FISICO_13ABR2026.xlsx"
 
-* Hoja BDA: base pivotada
+* 8a) Hoja BDA (base pivotada con NIVEL)
+use "`bda'", clear
 export excel using "`xlsx'", ///
     firstrow(variables) sheet("BDA") sheetreplace
 
-* Hoja TABLA: resumen por nivel + indicador
-preserve
-    use "$output\TABLA_IND_AVANCE_FISICO.dta", clear
-    export excel using "`xlsx'", ///
-        firstrow(variables) sheet("TABLA") sheetreplace
+* 8b) Hoja TABLA (resumen por nivel + indicador global)
+use "`tabla'", clear
+export excel using "`xlsx'", ///
+    firstrow(variables) sheet("TABLA") sheetreplace
 
-    putexcel set "`xlsx'", sheet("TABLA") modify
-    local r = _N + 3
-    putexcel A`r' = "IND_AVANCE_FISICO (prom. niveles)", bold
-    putexcel G`r' = (IND_PROM),  nformat("0.0000"), bold
-    local r2 = `r' + 1
-    putexcel A`r2' = "IND_AVANCE_PONDERADO (Σ ratio*peso)"
-    putexcel G`r2' = (IND_PONDE), nformat("0.0000")
-restore
+putexcel set "`xlsx'", sheet("TABLA") modify
+local r  = _N + 3
+local r2 = `r' + 1
+putexcel A`r'  = "IND_AVANCE_FISICO (prom. niveles)", bold
+putexcel G`r'  = (IND_PROM),  nformat("0.0000"), bold
+putexcel A`r2' = "IND_AVANCE_PONDERADO (Σ ratio*peso)"
+putexcel G`r2' = (IND_PONDE), nformat("0.0000")
 
+* 8c) Guardar BDA final con los mismos resultados
+use "`bda'", clear
 save "$output\BDA_IND_AVANCE_FISICO_13ABR2026_final.dta", replace
 
 di as res _n "Archivos guardados en $output"

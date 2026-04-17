@@ -263,22 +263,29 @@ restore
 *---------------------------- 7. INDICADOR ------------------------------------*
 use "`bda'", clear
 
-* Σ MTO_AVAN_REAL total (denominador del peso)
+* Denominadores totales para los pesos
 sum MTO_AVAN_REAL, meanonly
 local TOT_MTO = r(sum)
+sum COSTO_ACT,    meanonly
+local TOT_COSTO = r(sum)
+sum PIM_AÑO_ACTUAL, meanonly
+local TOT_PIM   = r(sum)
 
-* Tabla resumen por NIVEL con DOS variantes de numerador:
-*   - NUMER_COSTO = COSTO_ACT_N  * RATIO * PESO   (fórmula usada en _calc)
-*   - NUMER_PIM   = PIM_AÑO_AC_N * RATIO * PESO   (alternativa, para
-*                   comparar con la ficha: a esta altura del año ≤ 10%)
-* Indicadores globales:
-*   - IND_PROM        = promedio de INDICADOR_N (fórmula _calc)
-*   - IND_PONDE       = Σ INDICADOR_N = Σ ratio*peso
-*   - IND_NUM_COSTO   = Σ NUMER_COSTO / Σ COSTO_ACT_N
-*   - IND_NUM_PIM     = Σ NUMER_PIM   / Σ PIM_AÑO_AC_N
+* Tabla resumen por NIVEL con TRES pesos en paralelo:
+*   - PESO        = Σ MTO_AVAN_REAL_N / Σ MTO_AVAN_REAL_total  (fórmula _calc)
+*   - PESO_COSTO  = Σ COSTO_ACT_N     / Σ COSTO_ACT_total
+*   - PESO_PIM    = Σ PIM_AÑO_AC_N    / Σ PIM_AÑO_AC_total
+* Numeradores: NUMER_COSTO = COSTO_N * RATIO * PESO (MTO_REAL),
+*              NUMER_PIM   = PIM_N   * RATIO * PESO (MTO_REAL).
+* Indicadores por nivel:
+*   IND_MTO   = RATIO * PESO        (fórmula _calc)
+*   IND_COSTO = RATIO * PESO_COSTO  (validación usuario ~10%)
+*   IND_PIM   = RATIO * PESO_PIM
 tempname P
 postfile `P' str8 NIVEL_G CANT ///
-    double PORC_PROG PORC_REAL RATIO PESO INDICADOR ///
+    double PORC_PROG PORC_REAL RATIO ///
+           PESO PESO_COSTO PESO_PIM ///
+           INDICADOR IND_COSTO IND_PIM ///
            COSTO_N NUMER_COSTO PIM_N NUMER_PIM ///
     using "`tabla'", replace
 
@@ -302,23 +309,40 @@ foreach n of local niveles {
     local pim_n = r(sum)
 
     local ratio       = cond(`pp' > 0, `pr'/`pp', .)
-    local peso        = cond(`TOT_MTO' > 0, `mreal_n'/`TOT_MTO', .)
-    local ind_n       = cond(`ratio' < . & `peso' < ., `ratio'*`peso', .)
+    local peso        = cond(`TOT_MTO'   > 0, `mreal_n'/`TOT_MTO',   .)
+    local peso_costo  = cond(`TOT_COSTO' > 0, `costo_n'/`TOT_COSTO', .)
+    local peso_pim    = cond(`TOT_PIM'   > 0, `pim_n'  /`TOT_PIM',   .)
+
+    local ind_n       = cond(`ratio' < . & `peso'       < ., `ratio'*`peso',       .)
+    local ind_costo   = cond(`ratio' < . & `peso_costo' < ., `ratio'*`peso_costo', .)
+    local ind_pim     = cond(`ratio' < . & `peso_pim'   < ., `ratio'*`peso_pim',   .)
+
     local numer_costo = cond(`ind_n' < . & `costo_n' < ., `costo_n'*`ind_n', .)
     local numer_pim   = cond(`ind_n' < . & `pim_n'   < ., `pim_n'  *`ind_n', .)
 
-    post `P' ("`n'") (`cant') (`pp') (`pr') (`ratio') (`peso') (`ind_n') ///
+    post `P' ("`n'") (`cant') (`pp') (`pr') (`ratio') ///
+             (`peso') (`peso_costo') (`peso_pim') ///
+             (`ind_n') (`ind_costo') (`ind_pim') ///
              (`costo_n') (`numer_costo') (`pim_n') (`numer_pim')
 }
 postclose `P'
 
 * Leer la tabla y calcular los indicadores globales
 use "`tabla'", clear
-list, sep(0) noobs abbreviate(12)
+list NIVEL_G CANT PORC_PROG PORC_REAL RATIO INDICADOR IND_COSTO IND_PIM, ///
+    sep(0) noobs abbreviate(12)
 
 sum INDICADOR, meanonly
 scalar IND_PROM  = r(mean)
 scalar IND_PONDE = r(sum)
+
+sum IND_COSTO, meanonly
+scalar IND_COSTO_PROM  = r(mean)
+scalar IND_COSTO_PONDE = r(sum)
+
+sum IND_PIM, meanonly
+scalar IND_PIM_PROM  = r(mean)
+scalar IND_PIM_PONDE = r(sum)
 
 sum NUMER_COSTO, meanonly
 scalar NUM_COSTO_TOT = r(sum)
@@ -333,14 +357,18 @@ scalar PIM_TOTAL = r(sum)
 scalar IND_NUM_PIM = cond(PIM_TOTAL > 0, NUM_PIM_TOT/PIM_TOTAL, .)
 
 di as txt _n(2) "================================================================"
-di as txt "   IND_AVANCE_FISICO (promedio de niveles, fórmula _calc) = " %9.4f IND_PROM
-di as txt "   IND_AVANCE_PONDERADO (Σ ratio_N * peso_N)              = " %9.4f IND_PONDE
-di as txt "   IND_NUM_COSTO (Σ Numerador_COSTO / Σ COSTO_ACT)        = " %9.4f IND_NUM_COSTO
-di as txt "   IND_NUM_PIM   (Σ Numerador_PIM   / Σ PIM_AÑO_ACTUAL)   = " %9.4f IND_NUM_PIM
-di as txt "   Σ NUMER_COSTO                                          = " %16.2f NUM_COSTO_TOT
-di as txt "   Σ COSTO_ACT                                            = " %16.2f COSTO_TOTAL
-di as txt "   Σ NUMER_PIM                                            = " %16.2f NUM_PIM_TOT
-di as txt "   Σ PIM_AÑO_ACTUAL                                       = " %16.2f PIM_TOTAL
+di as txt "   PESO = MTO_AVAN_REAL (fórmula _calc)"
+di as txt "     IND_PROM   (prom. niveles)       = " %9.4f IND_PROM
+di as txt "     IND_PONDE  (Σ ratio*peso)        = " %9.4f IND_PONDE
+di as txt "   PESO = COSTO_ACT   (validación ~10% del usuario)"
+di as txt "     IND_COSTO_PROM  (prom. niveles)  = " %9.4f IND_COSTO_PROM
+di as txt "     IND_COSTO_PONDE (Σ ratio*peso_C) = " %9.4f IND_COSTO_PONDE
+di as txt "   PESO = PIM_AÑO_ACTUAL"
+di as txt "     IND_PIM_PROM    (prom. niveles)  = " %9.4f IND_PIM_PROM
+di as txt "     IND_PIM_PONDE   (Σ ratio*peso_P) = " %9.4f IND_PIM_PONDE
+di as txt "   Otros (sobre numerador × razón):"
+di as txt "     IND_NUM_COSTO   = Σ Numer_COSTO / Σ COSTO_ACT      = " %9.4f IND_NUM_COSTO
+di as txt "     IND_NUM_PIM     = Σ Numer_PIM   / Σ PIM_AÑO_ACTUAL = " %9.4f IND_NUM_PIM
 di as txt "================================================================"
 
 *---------------------------- 8. EXPORTAR A EXCEL -----------------------------*
@@ -370,18 +398,35 @@ export excel using "`xlsx'", ///
 
 * En putexcel las opciones van SEPARADAS POR ESPACIOS (no por comas).
 putexcel set "`xlsx'", sheet("TABLA") modify
-local r  = _N + 3
-local r2 = `r' + 1
-local r3 = `r' + 2
-local r4 = `r' + 3
-putexcel A`r'  = "IND_AVANCE_FISICO (prom. niveles)", bold
-putexcel G`r'  = (IND_PROM),      nformat("0.0000") bold
-putexcel A`r2' = "IND_AVANCE_PONDERADO (Σ ratio*peso)"
-putexcel G`r2' = (IND_PONDE),     nformat("0.0000")
-putexcel A`r3' = "IND_NUM_COSTO (Σ Numer_COSTO / Σ COSTO_ACT)"
-putexcel G`r3' = (IND_NUM_COSTO), nformat("0.0000")
-putexcel A`r4' = "IND_NUM_PIM   (Σ Numer_PIM / Σ PIM_AÑO_ACTUAL)", bold
-putexcel G`r4' = (IND_NUM_PIM),   nformat("0.0000") bold
+local r0 = _N + 3
+local c  = "J"
+local r  = `r0'
+putexcel A`r' = "INDICADOR",                                              bold
+putexcel `c'`r' = "VALOR",                                                bold
+local ++r
+putexcel A`r' = "IND_AVANCE_FISICO  (prom. niveles, PESO=MTO_REAL)", bold
+putexcel `c'`r' = (IND_PROM),        nformat("0.0000") bold
+local ++r
+putexcel A`r' = "IND_AVANCE_PONDER. (Σ ratio*peso, PESO=MTO_REAL)"
+putexcel `c'`r' = (IND_PONDE),       nformat("0.0000")
+local ++r
+putexcel A`r' = "IND_COSTO_PROM     (prom. niveles, PESO=COSTO_ACT)", bold
+putexcel `c'`r' = (IND_COSTO_PROM),  nformat("0.0000") bold
+local ++r
+putexcel A`r' = "IND_COSTO_PONDE    (Σ ratio*peso, PESO=COSTO_ACT)"
+putexcel `c'`r' = (IND_COSTO_PONDE), nformat("0.0000")
+local ++r
+putexcel A`r' = "IND_PIM_PROM       (prom. niveles, PESO=PIM)"
+putexcel `c'`r' = (IND_PIM_PROM),    nformat("0.0000")
+local ++r
+putexcel A`r' = "IND_PIM_PONDE      (Σ ratio*peso, PESO=PIM)"
+putexcel `c'`r' = (IND_PIM_PONDE),   nformat("0.0000")
+local ++r
+putexcel A`r' = "IND_NUM_COSTO      (Σ Numer_COSTO / Σ COSTO_ACT)"
+putexcel `c'`r' = (IND_NUM_COSTO),   nformat("0.0000")
+local ++r
+putexcel A`r' = "IND_NUM_PIM        (Σ Numer_PIM / Σ PIM_AÑO_ACTUAL)"
+putexcel `c'`r' = (IND_NUM_PIM),     nformat("0.0000")
 
 * 8c) Guardar BDA final con los mismos resultados
 use "`bda'", clear

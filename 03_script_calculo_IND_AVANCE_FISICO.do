@@ -244,13 +244,14 @@ preserve
           MTO_AVAN_PROG MTO_AVAN_REAL                  ///
           PIM_AÑO_ACTUAL COSTO_ACT
 
+    label variable NIVEL          "Nivel"
     label variable CANT_OBRAS     "Suma de cant_obras"
     label variable POR_AVAN_PROG  "Suma de POR_AVAN_PROG"
     label variable POR_AVAN_REAL  "Suma de POR_AVAN_REAL"
     label variable MTO_AVAN_PROG  "Suma de MTO_AVAN_PROG"
     label variable MTO_AVAN_REAL  "Suma de MTO_AVAN_REAL"
-    label variable PIM_AÑO_ACTUAL "Suma de PIM año actual"
-    label variable COSTO_ACT      "Suma de COSTO ACTUALIZADO"
+    label variable PIM_AÑO_ACTUAL "Suma de PIM 2025"
+    label variable COSTO_ACT      "Suma de COSTO ACUTALIZADO"
 
     save "`cuadro'", replace
     di as res "  Cuadro por nivel guardado: `cuadro'"
